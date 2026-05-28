@@ -1162,6 +1162,7 @@ class Scheduler(
             self.init_new_token_ratio - self.min_new_token_ratio
         ) / envs.SGLANG_NEW_TOKEN_RATIO_DECAY_STEPS.get()
         self.new_token_ratio = self.init_new_token_ratio
+        self.retraction_recovery_cooldown = 0
 
     def init_soft_watchdog(self, server_args: ServerArgs):
         if (x := server_args.soft_watchdog_timeout) is not None:
@@ -2737,6 +2738,17 @@ class Scheduler(
                 ):
                     break
 
+            # After retraction, gate admission in two phases:
+            #   Phase 1 (cooldown > 100): block ALL requests — let the
+            #     remaining decode batch stabilize and free pool space.
+            #   Phase 2 (cooldown ≤ 100): only re-admit retracted requests;
+            #     they have output progress invested and should be restored.
+            #   New (non-retracted) requests are blocked for the full cooldown.
+            if self.retraction_recovery_cooldown > 0 and (
+                self.retraction_recovery_cooldown > 100 or not req.is_retracted
+            ):
+                continue
+
             if self.enable_hicache_storage:
                 prefetch_done = self.tree_cache.check_prefetch_progress(req.rid)
                 if not prefetch_done:
@@ -2784,6 +2796,7 @@ class Scheduler(
 
         # Update waiting queue
         can_run_list: List[Req] = adder.can_run_list
+
         if len(can_run_list) == 0:
             return None
 
@@ -2966,13 +2979,18 @@ class Scheduler(
                 )
             logger.warning(msg_prefix + msg_details)
 
+            self.retraction_recovery_cooldown = 200
+
             for req in retracted_reqs:
                 self._add_request_to_queue(req, is_retracted=True)
         else:
-            self.new_token_ratio = max(
-                self.new_token_ratio - self.new_token_ratio_decay,
-                self.min_new_token_ratio,
-            )
+            if self.retraction_recovery_cooldown > 0:
+                self.retraction_recovery_cooldown -= 1
+            else:
+                self.new_token_ratio = max(
+                    self.new_token_ratio - self.new_token_ratio_decay,
+                    self.min_new_token_ratio,
+                )
 
         if batch.batch_size() < initial_bs:
             batch.batch_is_full = False

@@ -1016,9 +1016,7 @@ class PrefillAdder:
                     self._get_running_request_total_token_offset(running_req)
                 )
                 release_counter += 1
-                self.running_batch.release_req(
-                    i, len(self.running_batch.reqs) - release_counter, server_args
-                )
+                self.running_batch.release_req(i, server_args)
             else:
                 keep_indices.append(i)
         self.running_batch.filter_batch(keep_indices=keep_indices)

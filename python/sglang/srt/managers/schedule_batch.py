@@ -1256,7 +1256,8 @@ class Req(ReqDllmMixin):
         self.swa_prefix_lock_released = False
         self.extend_input_len = 0
         self.is_retracted = True
-        self.retracted_stain = True
+        self.cached_tokens = 0
+        self._cache_breakdown_computed = False
         self.input_token_logprobs = None
         self.temp_input_top_logprobs_val = None
         self.temp_input_top_logprobs_idx = None
@@ -2163,7 +2164,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
     def retract_all(self, server_args: ServerArgs):
         retracted_reqs = self.reqs
         for idx in range(len(self.reqs)):
-            self.release_req(idx, len(self.reqs) - idx, server_args)
+            self.release_req(idx, server_args)
 
         self.filter_batch(retracted_reqs)
         return retracted_reqs
@@ -2174,14 +2175,16 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         """Retract the decoding requests when there is not enough memory."""
         sorted_indices = list(range(len(self.reqs)))
 
-        # TODO(lsyin): improve retraction policy for radix cache
-        # For spec decoding, filter_batch API can only filter
-        # requests from the back, so we can only retract from the back.
-        # TODO(sang): Clean up finish path and support better retract
-        # policy.
+        # Retraction policy: retract requests that free the most KV cache
+        # memory with the least output progress lost. Sort by:
+        #   1. kv_allocated_len (desc) — free the most memory first
+        #   2. output_ids length (asc) — lose the least progress
+        #   3. origin_input_ids length (desc) — longer input = more memory freed
+        # reverse=True + pop() means the SMALLEST key value is retracted first.
         if not server_args.speculative_algorithm:
             sorted_indices.sort(
                 key=lambda i: (
+                    -self.reqs[i].kv_allocated_len,
                     len(self.reqs[i].output_ids),
                     -len(self.reqs[i].origin_input_ids),
                 ),
@@ -2202,7 +2205,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             req = self.reqs[idx]
             retracted_reqs.append(req)
             # release memory and don't insert into the tree because we need the space instantly
-            self.release_req(idx, len(sorted_indices), server_args)
+            self.release_req(idx, server_args)
 
         reqs_to_abort: List[Req] = []
         if len(sorted_indices) <= 1 and not self.check_decode_mem(
@@ -2218,7 +2221,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
                 status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
             )
             reqs_to_abort.append(last_req)
-            self.release_req(last_idx, 0, server_args)
+            self.release_req(last_idx, server_args)
             logger.warning(
                 "retract_decode: aborted last request %s due to OOM", last_req.rid
             )
@@ -2235,11 +2238,19 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         ) / (
             total_max_new_tokens + 1
         )  # avoid zero division
-        new_estimate_ratio = min(1.0, new_estimate_ratio)
+        # Cap at init_new_token_ratio: after retraction the remaining
+        # requests are near their max, inflating the estimate. Don't
+        # admit tokens more aggressively than at server start.
+        max_ratio = min(
+            1.0,
+            envs.SGLANG_INIT_NEW_TOKEN_RATIO.get()
+            * server_args.schedule_conservativeness,
+        )
+        new_estimate_ratio = min(new_estimate_ratio, max_ratio)
 
         return retracted_reqs, new_estimate_ratio, reqs_to_abort
 
-    def release_req(self, idx: int, remaing_req_count: int, server_args: ServerArgs):
+    def release_req(self, idx: int, server_args: ServerArgs):
         req = self.reqs[idx]
 
         if self.hisparse_coordinator is not None and not req.finished():
@@ -2249,11 +2260,11 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             req.offload_kv_cache(
                 self.req_to_token_pool, self.token_to_kv_pool_allocator
             )
-        # TODO (csy): for preempted requests, we may want to insert into the tree
-        release_kv_cache(req, self.tree_cache, is_insert=False)
-        # NOTE(lsyin): we should use the newly evictable memory instantly.
-        num_tokens = remaing_req_count * envs.SGLANG_RETRACT_DECODE_STEPS.get()
-        evict_from_tree_cache(self.tree_cache, num_tokens)
+        release_kv_cache(req, self.tree_cache, is_insert=True)
+        # Do not eagerly evict from the tree cache here. The retraction loop
+        # calls check_decode_mem which handles eviction internally. Inserting
+        # into the radix tree preserves the prefix for the retracted request's
+        # re-prefill; eagerly evicting would undo that benefit.
 
         req.reset_for_retract()
 
