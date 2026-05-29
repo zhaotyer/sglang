@@ -319,7 +319,6 @@ class DSV4PoolConfigurator(MemoryPoolConfigurator):
         self.qk_nope_head_dim = cfg.qk_nope_head_dim
         self.qk_rope_head_dim = cfg.qk_rope_head_dim
         self.indexer_head_dim = cfg.index_head_dim
-        self.compression_ratios = cfg.compress_ratios
         self.swa_page_size = cfg.window_size
         self.swa_ratio = mr.server_args.swa_full_tokens_ratio
         self.is_speculative = mr.server_args.speculative_algorithm is not None
@@ -338,6 +337,7 @@ class DSV4PoolConfigurator(MemoryPoolConfigurator):
         self.c4_ring_size = get_compress_state_ring_size(4, self.is_speculative)
         self.c128_ring_size = get_compress_state_ring_size(128, self.is_speculative)
 
+        self.compression_ratios = cfg.compress_ratios[mr.start_layer : mr.end_layer]
         self.num_layers_total = len(self.compression_ratios)
         self.num_layers_ca4 = sum(1 for r in self.compression_ratios if r == 4)
         self.num_layers_ca128 = sum(1 for r in self.compression_ratios if r == 128)

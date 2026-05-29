@@ -60,6 +60,7 @@ _is_hip = is_hip()
 
 class ModelRunnerKVCacheMixin:
     def _profile_available_bytes(self: ModelRunner, pre_model_load_memory: int) -> int:
+        torch.cuda.empty_cache()
         post_model_load_memory = get_available_gpu_memory(
             self.device,
             self.gpu_id,
