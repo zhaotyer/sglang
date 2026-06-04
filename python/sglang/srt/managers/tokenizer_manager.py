@@ -981,7 +981,10 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
         # Note: if there are preferred sampling params, we use them if they are not
         # explicitly passed in sampling_params
         if self.preferred_sampling_params:
-            sampling_kwargs = {**self.preferred_sampling_params, **obj.sampling_params}
+            sampling_kwargs = {
+                **self.preferred_sampling_params,
+                **{k: v for k, v in obj.sampling_params.items() if v is not None}
+            }
         else:
             sampling_kwargs = obj.sampling_params
         sampling_params = self.sampling_params_class(**sampling_kwargs)
