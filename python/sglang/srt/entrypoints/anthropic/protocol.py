@@ -379,6 +379,15 @@ class AnthropicMessagesRequest(BaseModel):
     output_config: Optional[AnthropicOutputConfig] = None
     betas: Optional[list[str]] = None
 
+    # SGLang internal PD-disaggregation fields. The gateway injects these
+    # before forwarding Anthropic requests to prefill/decode workers.
+    bootstrap_host: Optional[list[str] | str] = None
+    bootstrap_port: Optional[list[Optional[int]] | int] = None
+    bootstrap_room: Optional[list[int] | int] = None
+    routed_dp_rank: Optional[int] = None
+    disagg_prefill_dp_rank: Optional[int] = None
+    data_parallel_rank: Optional[int] = None
+
     @field_validator("model")
     @classmethod
     def _validate_model(cls, v):

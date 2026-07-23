@@ -553,6 +553,18 @@ class AnthropicServing:
         if anthropic_request.stop_sequences is not None:
             request_data["stop"] = anthropic_request.stop_sequences
 
+        for pd_field in (
+            "bootstrap_host",
+            "bootstrap_port",
+            "bootstrap_room",
+            "routed_dp_rank",
+            "disagg_prefill_dp_rank",
+            "data_parallel_rank",
+        ):
+            value = getattr(anthropic_request, pd_field)
+            if value is not None:
+                request_data[pd_field] = value
+
         # Enable usage in stream so we can report it
         if anthropic_request.stream:
             request_data["stream_options"] = StreamOptions(
